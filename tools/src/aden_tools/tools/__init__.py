@@ -52,6 +52,7 @@ from .file_system_toolkits.write_to_file import register_tools as register_write
 from .github_tool import register_tools as register_github
 from .gmail_tool import register_tools as register_gmail
 from .google_maps_tool import register_tools as register_google_maps
+from .google_sheets_tool import register_tools as register_google_sheets
 from .http_headers_scanner import register_tools as register_http_headers_scanner
 from .hubspot_tool import register_tools as register_hubspot
 from .news_tool import register_tools as register_news
@@ -102,6 +103,7 @@ def register_all_tools(
     register_email(mcp, credentials=credentials)
     # Gmail inbox management (read, trash, modify labels)
     register_gmail(mcp, credentials=credentials)
+    register_google_sheets(mcp, credentials=credentials)
     register_hubspot(mcp, credentials=credentials)
     register_news(mcp, credentials=credentials)
     register_apollo(mcp, credentials=credentials)
@@ -204,6 +206,16 @@ def register_all_tools(
         "github_list_stargazers",
         "github_get_user_profile",
         "github_get_user_emails",
+        "google_sheets_get_spreadsheet",
+        "google_sheets_create_spreadsheet",
+        "google_sheets_get_values",
+        "google_sheets_update_values",
+        "google_sheets_append_values",
+        "google_sheets_clear_values",
+        "google_sheets_batch_update_values",
+        "google_sheets_batch_clear_values",
+        "google_sheets_add_sheet",
+        "google_sheets_delete_sheet",
         "send_email",
         "gmail_reply_email",
         "gmail_list_messages",

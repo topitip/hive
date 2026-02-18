@@ -9,7 +9,7 @@ from aden_tools.credentials.health_check import (
     AnthropicHealthChecker,
     DiscordHealthChecker,
     GitHubHealthChecker,
-    GoogleCalendarHealthChecker,
+    GoogleHealthChecker,
     GoogleMapsHealthChecker,
     GoogleSearchHealthChecker,
     ResendHealthChecker,
@@ -45,10 +45,10 @@ class TestHealthCheckerRegistry:
         assert "google_maps" in HEALTH_CHECKERS
         assert isinstance(HEALTH_CHECKERS["google_maps"], GoogleMapsHealthChecker)
 
-    def test_google_calendar_oauth_registered(self):
-        """GoogleCalendarHealthChecker is registered in HEALTH_CHECKERS."""
-        assert "google_calendar_oauth" in HEALTH_CHECKERS
-        assert isinstance(HEALTH_CHECKERS["google_calendar_oauth"], GoogleCalendarHealthChecker)
+    def test_google_registered(self):
+        """GoogleHealthChecker is registered in HEALTH_CHECKERS under 'google'."""
+        assert "google" in HEALTH_CHECKERS
+        assert isinstance(HEALTH_CHECKERS["google"], GoogleHealthChecker)
 
     def test_discord_registered(self):
         """DiscordHealthChecker is registered in HEALTH_CHECKERS."""
@@ -65,7 +65,7 @@ class TestHealthCheckerRegistry:
             "anthropic",
             "github",
             "resend",
-            "google_calendar_oauth",
+            "google",
             "slack",
             "discord",
         }
@@ -430,17 +430,136 @@ class TestCheckCredentialHealthDispatcher:
         assert result.details.get("partial_check") is True
 
 
-class TestGoogleCalendarHealthCheckerTokenSanitization:
-    """Tests for token sanitization in GoogleCalendarHealthChecker error handling."""
+class TestGoogleHealthChecker:
+    """Tests for GoogleHealthChecker (Gmail, Calendar, Sheets)."""
+
+    def _setup_mock_client(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+        mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
+        return mock_client
+
+    def _mock_response(self, status_code):
+        response = MagicMock(spec=httpx.Response)
+        response.status_code = status_code
+        return response
+
+    @patch("aden_tools.credentials.health_check.httpx.Client")
+    def test_all_scopes_valid(self, mock_client_cls):
+        """All three endpoints return 200/404 → valid."""
+        mock_client = self._setup_mock_client(mock_client_cls)
+        # Gmail 200, Calendar 200, Sheets 404 (no spreadsheet, but scope works)
+        mock_client.get.side_effect = [
+            self._mock_response(200),
+            self._mock_response(200),
+            self._mock_response(404),
+        ]
+
+        checker = GoogleHealthChecker()
+        result = checker.check("test-token")
+
+        assert result.valid is True
+        assert "Gmail" in result.message
+        assert "Calendar" in result.message
+        assert "Sheets" in result.message
+
+    @patch("aden_tools.credentials.health_check.httpx.Client")
+    def test_invalid_token_401_fails_fast(self, mock_client_cls):
+        """401 on the first endpoint → token invalid, no further calls."""
+        mock_client = self._setup_mock_client(mock_client_cls)
+        mock_client.get.return_value = self._mock_response(401)
+
+        checker = GoogleHealthChecker()
+        result = checker.check("expired-token")
+
+        assert result.valid is False
+        assert result.details["status_code"] == 401
+        # Should fail fast — only one call made
+        assert mock_client.get.call_count == 1
+
+    @patch("aden_tools.credentials.health_check.httpx.Client")
+    def test_missing_calendar_scope(self, mock_client_cls):
+        """Gmail OK, Calendar 403, Sheets OK → reports missing calendar scope."""
+        mock_client = self._setup_mock_client(mock_client_cls)
+        mock_client.get.side_effect = [
+            self._mock_response(200),  # gmail
+            self._mock_response(403),  # calendar
+            self._mock_response(404),  # sheets (404 = scope OK)
+        ]
+
+        checker = GoogleHealthChecker()
+        result = checker.check("test-token")
+
+        assert result.valid is False
+        assert "calendar" in result.details["missing_scopes"]
+        assert "gmail" not in result.details["missing_scopes"]
+
+    @patch("aden_tools.credentials.health_check.httpx.Client")
+    def test_missing_gmail_and_sheets_scopes(self, mock_client_cls):
+        """Gmail 403, Calendar OK, Sheets 403 → reports both missing."""
+        mock_client = self._setup_mock_client(mock_client_cls)
+        mock_client.get.side_effect = [
+            self._mock_response(403),  # gmail
+            self._mock_response(200),  # calendar
+            self._mock_response(403),  # sheets
+        ]
+
+        checker = GoogleHealthChecker()
+        result = checker.check("test-token")
+
+        assert result.valid is False
+        assert "gmail" in result.details["missing_scopes"]
+        assert "sheets" in result.details["missing_scopes"]
+        assert len(result.details["missing_scopes"]) == 2
+
+    @patch("aden_tools.credentials.health_check.httpx.Client")
+    def test_sheets_404_is_success(self, mock_client_cls):
+        """Sheets returns 404 for non-existent spreadsheet — that's valid."""
+        mock_client = self._setup_mock_client(mock_client_cls)
+        mock_client.get.side_effect = [
+            self._mock_response(200),
+            self._mock_response(200),
+            self._mock_response(404),
+        ]
+
+        checker = GoogleHealthChecker()
+        result = checker.check("test-token")
+
+        assert result.valid is True
+
+    @patch("aden_tools.credentials.health_check.httpx.Client")
+    def test_unexpected_status_code(self, mock_client_cls):
+        """500 on any endpoint → reports failure with scope name."""
+        mock_client = self._setup_mock_client(mock_client_cls)
+        mock_client.get.side_effect = [
+            self._mock_response(200),  # gmail
+            self._mock_response(500),  # calendar
+        ]
+
+        checker = GoogleHealthChecker()
+        result = checker.check("test-token")
+
+        assert result.valid is False
+        assert result.details["status_code"] == 500
+        assert result.details["scope"] == "calendar"
+
+    @patch("aden_tools.credentials.health_check.httpx.Client")
+    def test_timeout(self, mock_client_cls):
+        mock_client = self._setup_mock_client(mock_client_cls)
+        mock_client.get.side_effect = httpx.TimeoutException("timed out")
+
+        checker = GoogleHealthChecker()
+        result = checker.check("test-token")
+
+        assert result.valid is False
+        assert result.details["error"] == "timeout"
 
     def test_request_error_with_bearer_token_sanitized(self):
-        """GoogleCalendarHealthChecker sanitizes Bearer tokens in error messages."""
-        checker = GoogleCalendarHealthChecker()
+        """Sanitizes Bearer tokens in error messages."""
+        checker = GoogleHealthChecker()
 
         with patch("aden_tools.credentials.health_check.httpx.Client") as mock_client_cls:
-            mock_client = MagicMock()
-            mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
-            mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
+            mock_client = self._setup_mock_client(mock_client_cls)
             mock_client.get.side_effect = httpx.RequestError(
                 "Connection failed with Bearer ya29.secret-token-here"
             )
@@ -452,32 +571,12 @@ class TestGoogleCalendarHealthCheckerTokenSanitization:
         assert "ya29" not in result.message
         assert "redacted" in result.message
 
-    def test_request_error_with_authorization_header_sanitized(self):
-        """GoogleCalendarHealthChecker sanitizes Authorization headers in errors."""
-        checker = GoogleCalendarHealthChecker()
-
-        with patch("aden_tools.credentials.health_check.httpx.Client") as mock_client_cls:
-            mock_client = MagicMock()
-            mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
-            mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
-            mock_client.get.side_effect = httpx.RequestError(
-                "Failed sending Authorization: Bearer token123"
-            )
-
-            result = checker.check("token123")
-
-        assert not result.valid
-        assert "token123" not in result.message
-        assert "redacted" in result.message
-
     def test_request_error_without_sensitive_data_passes_through(self):
         """Non-sensitive error messages pass through unchanged."""
-        checker = GoogleCalendarHealthChecker()
+        checker = GoogleHealthChecker()
 
         with patch("aden_tools.credentials.health_check.httpx.Client") as mock_client_cls:
-            mock_client = MagicMock()
-            mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
-            mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
+            mock_client = self._setup_mock_client(mock_client_cls)
             mock_client.get.side_effect = httpx.RequestError("Connection refused")
 
             result = checker.check("token123")

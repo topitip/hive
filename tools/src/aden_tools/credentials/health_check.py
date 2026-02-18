@@ -162,56 +162,72 @@ class BraveSearchHealthChecker:
             )
 
 
-class GoogleCalendarHealthChecker:
-    """Health checker for Google Calendar OAuth tokens."""
+class GoogleHealthChecker:
+    """Health checker for Google OAuth tokens (Gmail, Calendar, Sheets)."""
 
-    ENDPOINT = "https://www.googleapis.com/calendar/v3/users/me/calendarList"
+    ENDPOINTS: dict[str, str] = {
+        "gmail": "https://gmail.googleapis.com/gmail/v1/users/me/profile",
+        "calendar": "https://www.googleapis.com/calendar/v3/users/me/calendarList",
+        "sheets": "https://sheets.googleapis.com/v4/spreadsheets/healthcheck_nonexistent",
+    }
     TIMEOUT = 10.0
 
     def check(self, access_token: str) -> HealthCheckResult:
         """
-        Validate Google Calendar token by making lightweight API call.
+        Validate Google OAuth token against Gmail, Calendar, and Sheets APIs.
 
-        Makes a GET request for 1 calendar to verify the token works.
+        Hits a lightweight endpoint for each service. A 401 on any endpoint
+        means the token is invalid (fail fast). A 403 means the token lacks
+        that service's scope. For Sheets, a 404 counts as success (scope is
+        valid, the spreadsheet just doesn't exist).
         """
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+        }
+        missing_scopes: list[str] = []
+
         try:
             with httpx.Client(timeout=self.TIMEOUT) as client:
-                response = client.get(
-                    self.ENDPOINT,
-                    headers={
-                        "Authorization": f"Bearer {access_token}",
-                        "Accept": "application/json",
-                    },
-                    params={"maxResults": "1"},
+                for scope, url in self.ENDPOINTS.items():
+                    params = {"maxResults": "1"} if scope == "calendar" else {}
+                    response = client.get(url, headers=headers, params=params)
+
+                    if response.status_code == 401:
+                        return HealthCheckResult(
+                            valid=False,
+                            message="Google token is invalid or expired",
+                            details={"status_code": 401},
+                        )
+                    if response.status_code == 403:
+                        missing_scopes.append(scope)
+                        continue
+                    # Sheets returns 404 for a non-existent spreadsheet — that's fine,
+                    # it means the token + scope are valid.
+                    if response.status_code in (200, 404):
+                        continue
+                    # Unexpected status — not a scope issue, but not healthy either
+                    return HealthCheckResult(
+                        valid=False,
+                        message=f"Google {scope} API returned status {response.status_code}",
+                        details={"status_code": response.status_code, "scope": scope},
+                    )
+
+            if missing_scopes:
+                return HealthCheckResult(
+                    valid=False,
+                    message=f"Google token lacks scopes for: {', '.join(missing_scopes)}",
+                    details={"status_code": 403, "missing_scopes": missing_scopes},
                 )
 
-                if response.status_code == 200:
-                    return HealthCheckResult(
-                        valid=True,
-                        message="Google Calendar credentials valid",
-                    )
-                elif response.status_code == 401:
-                    return HealthCheckResult(
-                        valid=False,
-                        message="Google Calendar token is invalid or expired",
-                        details={"status_code": 401},
-                    )
-                elif response.status_code == 403:
-                    return HealthCheckResult(
-                        valid=False,
-                        message="Google Calendar token lacks required scopes",
-                        details={"status_code": 403, "required": "calendar"},
-                    )
-                else:
-                    return HealthCheckResult(
-                        valid=False,
-                        message=f"Google Calendar API returned status {response.status_code}",
-                        details={"status_code": response.status_code},
-                    )
+            return HealthCheckResult(
+                valid=True,
+                message="Google credentials valid (Gmail, Calendar, Sheets)",
+            )
         except httpx.TimeoutException:
             return HealthCheckResult(
                 valid=False,
-                message="Google Calendar API request timed out",
+                message="Google API request timed out",
                 details={"error": "timeout"},
             )
         except httpx.RequestError as e:
@@ -220,7 +236,7 @@ class GoogleCalendarHealthChecker:
                 error_msg = "Request failed (details redacted for security)"
             return HealthCheckResult(
                 valid=False,
-                message=f"Failed to connect to Google Calendar: {error_msg}",
+                message=f"Failed to connect to Google: {error_msg}",
                 details={"error": error_msg},
             )
 
@@ -684,7 +700,7 @@ HEALTH_CHECKERS: dict[str, CredentialHealthChecker] = {
     "discord": DiscordHealthChecker(),
     "hubspot": HubSpotHealthChecker(),
     "brave_search": BraveSearchHealthChecker(),
-    "google_calendar_oauth": GoogleCalendarHealthChecker(),
+    "google": GoogleHealthChecker(),
     "slack": SlackHealthChecker(),
     "google_search": GoogleSearchHealthChecker(),
     "google_maps": GoogleMapsHealthChecker(),

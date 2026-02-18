@@ -8,7 +8,7 @@ Supports:
 
 Requires OAuth 2.0 credentials:
 - Aden: Use aden_provider_name="google-calendar" for managed OAuth (recommended)
-- Direct: Set GOOGLE_CALENDAR_ACCESS_TOKEN with token from OAuth Playground
+- Direct: Set GOOGLE_ACCESS_TOKEN with token from OAuth Playground
 """
 
 from __future__ import annotations
@@ -82,10 +82,10 @@ def register_tools(
 
         # Fall back to credential store adapter
         if credentials is not None:
-            return credentials.get("google_calendar_oauth")
+            return credentials.get("google")
 
         # Fall back to environment variable
-        return os.getenv("GOOGLE_CALENDAR_ACCESS_TOKEN")
+        return os.getenv("GOOGLE_ACCESS_TOKEN")
 
     def _get_headers() -> dict[str, str]:
         """Get authorization headers for API requests.
@@ -106,7 +106,7 @@ def register_tools(
         if not token:
             return {
                 "error": "Calendar credentials not configured",
-                "help": "Set GOOGLE_CALENDAR_ACCESS_TOKEN environment variable",
+                "help": "Set GOOGLE_ACCESS_TOKEN environment variable",
             }
         return None
 
