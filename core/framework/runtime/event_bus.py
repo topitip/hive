@@ -86,6 +86,10 @@ class EventType(StrEnum):
     # Escalation (agent requests handoff to hive_coder)
     ESCALATION_REQUESTED = "escalation_requested"
 
+    # Worker health monitoring (judge → queen → operator pipeline)
+    WORKER_ESCALATION_TICKET = "worker_escalation_ticket"
+    QUEEN_INTERVENTION_REQUESTED = "queen_intervention_requested"
+
 
 @dataclass
 class AgentEvent:
@@ -849,6 +853,61 @@ class EventBus:
                 node_id=node_id,
                 execution_id=execution_id,
                 data={"reason": reason, "context": context},
+            )
+        )
+
+    async def emit_worker_escalation_ticket(
+        self,
+        stream_id: str,
+        node_id: str,
+        ticket: dict,
+        execution_id: str | None = None,
+    ) -> None:
+        """Emit a structured escalation ticket from the Worker Health Judge.
+
+        The ticket dict should be a serialized EscalationTicket. The Queen's
+        event-driven entry point fires on this event to triage the ticket.
+        """
+        await self.publish(
+            AgentEvent(
+                type=EventType.WORKER_ESCALATION_TICKET,
+                stream_id=stream_id,
+                node_id=node_id,
+                execution_id=execution_id,
+                data={"ticket": ticket},
+            )
+        )
+
+    async def emit_queen_intervention_requested(
+        self,
+        stream_id: str,
+        node_id: str,
+        ticket_id: str,
+        analysis: str,
+        severity: str,
+        queen_graph_id: str,
+        queen_stream_id: str,
+        execution_id: str | None = None,
+    ) -> None:
+        """Emit a human operator notification from the Queen.
+
+        The TUI subscribes to this event to surface a non-disruptive overlay.
+        queen_graph_id and queen_stream_id allow the TUI to route the operator
+        directly into the Queen's active session for a follow-up conversation.
+        """
+        await self.publish(
+            AgentEvent(
+                type=EventType.QUEEN_INTERVENTION_REQUESTED,
+                stream_id=stream_id,
+                node_id=node_id,
+                execution_id=execution_id,
+                data={
+                    "ticket_id": ticket_id,
+                    "analysis": analysis,
+                    "severity": severity,
+                    "queen_graph_id": queen_graph_id,
+                    "queen_stream_id": queen_stream_id,
+                },
             )
         )
 

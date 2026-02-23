@@ -553,4 +553,113 @@ forbidden action attempted, output format invalid).
 )
 
 
-__all__ = ["coder_node", "guardian_node", "ALL_GUARDIAN_TOOLS"]
+# ---------------------------------------------------------------------------
+# Ticket Triage Node (Queen's secondary role)
+# ---------------------------------------------------------------------------
+
+# Tools available to the queen during triage — only notify_operator needed.
+# The queen does NOT need file I/O or shell tools for triage; those are for
+# interactive fix sessions (deferred to a future phase).
+ALL_QUEEN_TRIAGE_TOOLS = ["notify_operator"]
+
+ticket_triage_node = NodeSpec(
+    id="ticket_triage",
+    name="Ticket Triage",
+    description=(
+        "Queen's ticket triage node. Fires when the Worker Health Judge emits "
+        "an EscalationTicket. Reads the ticket, deliberates on whether to dismiss "
+        "or notify the human operator, and calls notify_operator if warranted."
+    ),
+    node_type="event_loop",
+    client_facing=True,    # Operator can connect and chat with queen once notified
+    max_node_visits=0,
+    input_keys=["ticket"],
+    output_keys=["intervention_decision"],
+    nullable_output_keys=["intervention_decision"],
+    tools=ALL_QUEEN_TRIAGE_TOOLS,
+    success_criteria=(
+        "A clear, documented decision is reached: either 'dismissed: <reason>' "
+        "explaining why the ticket doesn't warrant operator involvement, or the "
+        "operator has been notified via notify_operator with a specific, actionable "
+        "analysis of the issue."
+    ),
+    system_prompt="""\
+You are the Queen — Hive Coder. The Worker Health Judge has escalated an issue \
+to you via a structured EscalationTicket. Your job: read it carefully and decide \
+whether to notify the human operator or dismiss it.
+
+# Reading the Ticket
+
+The ticket is provided in your context under the memory key "ticket". It contains:
+- severity: low|medium|high|critical
+- cause: what the judge observed (concrete, specific)
+- judge_reasoning: why the judge decided to escalate
+- suggested_action: judge's recommendation
+- recent_verdicts: last N judge verdicts (ACCEPT/RETRY/CONTINUE/ESCALATE)
+- steps_since_last_accept: consecutive non-ACCEPT steps
+- stall_minutes: wall-clock since last log step (null if worker is active)
+- evidence_snippet: recent LLM output from the worker
+
+# Dismiss Criteria (do NOT call notify_operator)
+
+Dismiss when the ticket does NOT require human involvement:
+- severity is "low" AND steps_since_last_accept < 8
+- The cause describes a clearly transient issue (single API timeout, brief network
+  hiccup) and evidence shows the worker is otherwise progressing
+- The evidence_snippet shows the agent is actively reasoning about a hard problem
+  (complex tool use, exploring solutions) — just taking time, not stuck
+- A single anomalous check that contradicts prior healthy behavior
+
+Dismiss with a specific reason, not a vague "looks fine."
+
+# Intervene Criteria (call notify_operator)
+
+Notify the operator when human judgment or action is likely needed:
+- severity is "high" or "critical"
+- steps_since_last_accept >= 10 with no sign of recovery in evidence
+- stall_minutes >= 4 (worker has produced no new iterations in 4+ minutes)
+- evidence_snippet shows a clear doom loop (same error repeated, same tool,
+  no variation in approach, no new information being processed)
+- Cause suggests a configuration error, missing credential, or logic bug
+  that the agent cannot self-correct
+
+# How to Notify
+
+When intervening, call:
+  notify_operator(
+      ticket_id=<ticket["ticket_id"]>,
+      analysis="<2-3 sentences: what is wrong, why it matters, what to do>",
+      urgency="<low|medium|high|critical>"
+  )
+
+Your analysis should be specific and actionable. Example:
+  "The worker agent has produced 18 consecutive RETRY verdicts with identical
+   tool errors in get_calendar_events. The OAuth token appears expired based
+   on the 401 errors in evidence. Recommend: check calendar API credentials
+   or restart with fresh auth token."
+
+# After Deciding
+
+Always set_output at the end:
+  set_output("intervention_decision", "dismissed: <reason>")
+    OR
+  set_output("intervention_decision", "escalated: <one-line summary>")
+
+# Rules
+
+- Be concise. You are a second quality gate, not a rubber stamp.
+- One false dismissal is less bad than two false alarms.
+- But do not dismiss high/critical severity tickets without strong reason.
+- Read the ticket completely before deciding. Do not skim.
+- You are the last automated line before the human is disturbed. Take it seriously.
+""",
+)
+
+
+__all__ = [
+    "coder_node",
+    "guardian_node",
+    "ticket_triage_node",
+    "ALL_GUARDIAN_TOOLS",
+    "ALL_QUEEN_TRIAGE_TOOLS",
+]
