@@ -8,6 +8,12 @@ from fastmcp import FastMCP
 from aden_tools.tools.email_tool import register_tools
 
 
+@pytest.fixture(autouse=True)
+def _clean_email_env(monkeypatch):
+    """Prevent EMAIL_OVERRIDE_TO from hijacking mocked tests."""
+    monkeypatch.delenv("EMAIL_OVERRIDE_TO", raising=False)
+
+
 @pytest.fixture
 def send_email_fn(mcp: FastMCP):
     """Register and return the send_email tool function."""
